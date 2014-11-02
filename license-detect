@@ -3,47 +3,85 @@
 # Copyright (C) 2014 Sergey "Shnatsel" Davidoff <shnatsel@gmail.com>
 
 # This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU General Public License as published by
-# the Free Software Foundation, either version 3 of the License, or
+# it under the terms of the GNU Lesser General Public License as published by
+# the Free Software Foundation, either version 2.1 of the License, or
 # (at your option) any later version.
 
 # This program is distributed in the hope that it will be useful,
 # but WITHOUT ANY WARRANTY; without even the implied warranty of
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU General Public License for more details.
+# GNU Lesser General Public License for more details.
 
-# You should have received a copy of the GNU General Public License
+# You should have received a copy of the GNU Lesser General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-license_found() {
-license="$1"
-((licenses_found++))
-# Debug
-#echo "$1 found"
+# XXX: export LDECT_LIBRARY_MODE=true # DO THIS BEFORE sourcing this file
+export LDECT_LIBRARY_MODE=${LDECT_LIBRARY_MODE:-false}
+
+ldect_output_dir=${ldect_output_dir:-"$(mktemp --tmpdir -d license-detect.XXXXXXXXXX)"}
+
+# Process command-line arguments: detect directories and recursively traverse them.
+# Does not follow symlinks when recursing, but follows symlinks explicitly passed
+# in function parameters; export ldect_follow_symlinks=false to ignore your symlinks.
+# Silently skips block devices, FIFOs and the like.
+# Needs ldect_output_dir to be set.
+# Creates a file in $ldect_output_dir for each license detected,
+# each of them contains a list of files under that license.
+ldect_recursively_process_paths() {
+    while [ -n "$1" ]; do
+        if ! [ "$ldect_output_dir" ]; then
+            echo 'ldect_output_dir is not set when calling ldect_recursively_process_paths().
+This is a bug in your program. Deal with it.
+Also, shame on you for copypasting a library function!' >&2
+            exit 1 # I've crashed your entire script, yo.
+        fi
+        if ! [ -w "$ldect_output_dir" ] || ! [ -d "$ldect_output_dir" ]; then
+            echo "$ldect_output_dir does not seem to be a writable directory. Aborted." >&2
+            exit 1 # Oops, I did it again!
+        fi
+        path="$1"
+        if [ -d "$path" ] && [ -r "$path" ] && ([ "$ldect_follow_symlinks" ] || ! [ -L "$path" ] ); then
+            # Yes, this functions RECURSES for space-safe dir-recursive iteration
+            # because I dislike process substitutions and messing with IFS.
+            ldect_follow_symlinks=false ldect_recursively_process_paths "$path"/*
+        elif [ -f "$path" ] && [ -r "$path" ] && ( [ "$ldect_follow_symlinks" ] || ! [ -L "$path" ] ); then
+            license_list=$(detect_licenses_in_file "$path")
+            licenses_found=$(echo "$license_list" | wc -l)
+            # Write file name to a temporary file, depending on the license
+            if [ -z "$license_list" ]; then
+                echo "$path" >> "$ldect_output_dir"/Unrecognized
+            elif [ "$licenses_found" -eq 1 ]; then
+                echo "$path" >> "$ldect_output_dir"/"$license_list"
+            else
+                echo "$path" >> "$ldect_output_dir"/Multiple
+            fi
+        elif ! [ -r "$path" ]; then
+            echo "$path does not seem to be readable. Skipping." >&2
+        else
+            : # silently ignore block devices, FIFOs, etc
+        fi
+    shift
+    done
 }
 
-temp_dir="$(mktemp -d)"
-
-for file in **; do
-    if ! [ -f "$file" ]; then
-        continue
-    fi
-    licenses_found=0
+# Lists all licenses detected in a file on stdout.
+detect_licenses_in_file() {
     license=''
+    file="$1"
     # drop all line breaks and repetitive whitespace so they don't interfere with grepping
     prepared_data="$(cat "$file" | tr -d '\n' | tr --squeeze-repeats '[:blank:]')"
 
     # test for GNU licenses
     gnu_matches="$(echo "$prepared_data" | grep --only-matching -E 'GNU.{0,30}License')"
     if (echo "$gnu_matches" | grep -Eq '(Library)|(Lesser)'); then
-        license_found 'GNU_LGPL'; fi
+        echo 'LGPL'; fi
     if (echo "$gnu_matches" | grep -q 'Documentation'); then
-        license_found 'GNU_FDL'; fi
+        echo 'GFDL'; fi
     if (echo "$gnu_matches" | grep -q 'Affero'); then
-        license_found 'GNU_AGPL'; fi
+        echo 'AGPL'; fi
     if (echo "$gnu_matches" | grep -Eqv '(Library)|(Lesser)|(Documentation)|(Affero)' \
         && echo "$gnu_matches" | grep -q 'General' ); then
-        license_found 'GNU_GPL'; fi
+        echo 'GPL'; fi
 
     # multiple GNU licenses will be detected if authors forget to alter the license
     # name in one of the 3 places in licensing header.
@@ -52,28 +90,41 @@ for file in **; do
     # test for BSD licenses
     bsd_matches=$(echo "$prepared_data" | grep --only-matching -Pi 'Redistributions.{0,6}of.{0,6}source.{0,6}code.{0,6}must.{0,6}retain.{0,6}the.{0,15}copyright.{0,6}notice.{0,6}this.{0,6}list.{0,6}of.{0,6}conditions.{0,6}and.{0,6}the.{0,6}following.{0,6}disclaimer.+?EVEN.{0,6}IF.{0,6}ADVISED.{0,6}OF.{0,6}THE.{0,6}POSSIBILITY.{0,6}OF.{0,6}SUCH.{0,6}DAMAGE')
     if (echo "$bsd_matches" | grep -Eqi 'All.{0,6}advertising.{0,6}materials.{0,6}mentioning'); then
-        license_found 'BSD-4-clause'; fi
+        echo 'BSD-4-clause'; fi
     if (echo "$bsd_matches" | grep -Eiv 'All.{0,6}advertising.{0,6}materials.{0,6}mentioning' \
         | grep -Eqi 'used.{0,6}to.{0,6}endorse.{0,6}or.{0,6}promote'); then
-        license_found 'BSD-3-clause'; fi
+        echo 'BSD-3-clause'; fi
     if (echo "$bsd_matches" | grep -Eqi 'other.{0,6}materials.{0,6}provided.{0,6}with.{0,6}the.{0,6}distribution.{0,15}THIS.{0,6}SOFTWARE.{0,6}IS.{0,6}PROVIDED'); then
-        license_found 'BSD-2-clause'; fi
+        echo 'BSD-2-clause'; fi
+}
 
-    # Write file name to a temporary file, depending on the license
-    if [ "$licenses_found" -eq 0 ]; then
-        echo "$file" >> "$temp_dir"/Unrecognized
-    elif [ "$licenses_found" -eq 1 ]; then
-        echo "$file" >> "$temp_dir"/"$license"
-    else
-        echo "$file" >> "$temp_dir"/Multiple
-    fi
-done
+if [ "$LDECT_LIBRARY_MODE" = false ]; then
+    set -e
+    param_count=${#BASH_ARGV[@]}
 
-(
-cd "$temp_dir"
-for file in *; do
-    echo "  $file:"
-    cat "$file"
-done
-rm -r "$temp_dir"
-)
+    # TODO: output help if no parameters or -h, --help is given
+
+    # Space-safe iteration. Validate command-line parameters
+    for (( i=0; i<${param_count}; i++ )); do
+        if ! ( [ -d "${BASH_ARGV[$i]}" ] || [ -f "${BASH_ARGV[$i]}" ] ); then
+            echo "${BASH_ARGV[$i]} is not a valid file or directory." >&2
+            exit 1
+        elif ! [ -r "${BASH_ARGV[$i]}" ]; then
+            echo "${BASH_ARGV[$i]} does not appear to be readable." >&2
+            exit 1
+        fi
+     done
+
+    # If the command-line parameters are valid, do the actual detection
+    for (( i=0; i<${param_count}; i++ )); do
+        ldect_recursively_process_paths "${BASH_ARGV[$i]}"
+    done
+
+    ( # Output the results to the user
+    cd "$ldect_output_dir"
+    for file in *; do
+        echo "  $file:"
+        cat "$file"
+    done
+    )
+fi
