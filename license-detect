@@ -1,0 +1,79 @@
+#!/bin/bash
+
+# Copyright (C) 2014 Sergey "Shnatsel" Davidoff <shnatsel@gmail.com>
+
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+license_found() {
+license="$1"
+((licenses_found++))
+# Debug
+#echo "$1 found"
+}
+
+temp_dir="$(mktemp -d)"
+
+for file in **; do
+    if ! [ -f "$file" ]; then
+        continue
+    fi
+    licenses_found=0
+    license=''
+    # drop all line breaks and repetitive whitespace so they don't interfere with grepping
+    prepared_data="$(cat "$file" | tr -d '\n' | tr --squeeze-repeats '[:blank:]')"
+
+    # test for GNU licenses
+    gnu_matches="$(echo "$prepared_data" | grep --only-matching -E 'GNU.{0,30}License')"
+    if (echo "$gnu_matches" | grep -Eq '(Library)|(Lesser)'); then
+        license_found 'GNU_LGPL'; fi
+    if (echo "$gnu_matches" | grep -q 'Documentation'); then
+        license_found 'GNU_FDL'; fi
+    if (echo "$gnu_matches" | grep -q 'Affero'); then
+        license_found 'GNU_AGPL'; fi
+    if (echo "$gnu_matches" | grep -Eqv '(Library)|(Lesser)|(Documentation)|(Affero)' \
+        && echo "$gnu_matches" | grep -q 'General' ); then
+        license_found 'GNU_GPL'; fi
+
+    # multiple GNU licenses will be detected if authors forget to alter the license
+    # name in one of the 3 places in licensing header.
+    # See https://www.gnu.org/licenses/gpl-howto.en.html for header writing rules
+
+    # test for BSD licenses
+    bsd_matches=$(echo "$prepared_data" | grep --only-matching -Pi 'Redistributions.{0,6}of.{0,6}source.{0,6}code.{0,6}must.{0,6}retain.{0,6}the.{0,15}copyright.{0,6}notice.{0,6}this.{0,6}list.{0,6}of.{0,6}conditions.{0,6}and.{0,6}the.{0,6}following.{0,6}disclaimer.+?EVEN.{0,6}IF.{0,6}ADVISED.{0,6}OF.{0,6}THE.{0,6}POSSIBILITY.{0,6}OF.{0,6}SUCH.{0,6}DAMAGE')
+    if (echo "$bsd_matches" | grep -Eqi 'All.{0,6}advertising.{0,6}materials.{0,6}mentioning'); then
+        license_found 'BSD-4-clause'; fi
+    if (echo "$bsd_matches" | grep -Eiv 'All.{0,6}advertising.{0,6}materials.{0,6}mentioning' \
+        | grep -Eqi 'used.{0,6}to.{0,6}endorse.{0,6}or.{0,6}promote'); then
+        license_found 'BSD-3-clause'; fi
+    if (echo "$bsd_matches" | grep -Eqi 'other.{0,6}materials.{0,6}provided.{0,6}with.{0,6}the.{0,6}distribution.{0,15}THIS.{0,6}SOFTWARE.{0,6}IS.{0,6}PROVIDED'); then
+        license_found 'BSD-2-clause'; fi
+
+    # Write file name to a temporary file, depending on the license
+    if [ "$licenses_found" -eq 0 ]; then
+        echo "$file" >> "$temp_dir"/Unrecognized
+    elif [ "$licenses_found" -eq 1 ]; then
+        echo "$file" >> "$temp_dir"/"$license"
+    else
+        echo "$file" >> "$temp_dir"/Multiple
+    fi
+done
+
+(
+cd "$temp_dir"
+for file in *; do
+    echo "  $file:"
+    cat "$file"
+done
+rm -r "$temp_dir"
+)
